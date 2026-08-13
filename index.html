@@ -4,6 +4,7 @@
     <base target="_top" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light" />
+    <meta name="robots" content="noindex, nofollow" />
     <title>Draft Soundboard</title>
     <style>
       /* One page serves two homes: a narrow Apps Script sidebar and a browser
@@ -42,6 +43,8 @@
 
     <script>
       var SOUNDS = [{"key": "air_horn", "label": "Air Horn", "emoji": "\ud83d\udce3", "hotkey": "1", "use": "The pick is in"}, {"key": "whistle", "label": "Ref Whistle", "emoji": "\ud83c\udfbd", "hotkey": "2", "use": "You're on the clock"}, {"key": "crowd_cheer", "label": "Crowd Roar", "emoji": "\ud83c\udf89", "hotkey": "3", "use": "Steal of the draft"}, {"key": "crowd_boo", "label": "Booooo", "emoji": "\ud83d\udc4e", "hotkey": "4", "use": "That was a reach"}, {"key": "buzzer", "label": "Buzzer", "emoji": "\u23f0", "hotkey": "5", "use": "Time expired"}, {"key": "drumroll", "label": "Drumroll", "emoji": "\ud83e\udd41", "hotkey": "6", "use": "Building suspense"}, {"key": "sad_trombone", "label": "Womp Womp", "emoji": "\ud83c\udfba", "hotkey": "7", "use": "Someone got sniped"}, {"key": "touchdown", "label": "Touchdown", "emoji": "\ud83c\udfc8", "hotkey": "8", "use": "Big board moment"}, {"key": "applause", "label": "Golf Clap", "emoji": "\ud83d\udc4f", "hotkey": "9", "use": "Solid, boring pick"}, {"key": "ka_ching", "label": "Ka-Ching", "emoji": "\ud83d\udcb0", "hotkey": "0", "use": "Value pick"}];
+      var CLIPS = [];
+      var ALL = SOUNDS.concat(CLIPS);
       var ctx = null;
 
       function audio() {
@@ -252,18 +255,35 @@
         });
       };
 
+      // Imported clips are files, not synth routines. Each keeps one preloaded
+      // element and plays a clone, so hammering a button overlaps instead of
+      // restarting, and the file is fetched once.
+      var CLIP_AUDIO = {};
+      CLIPS.forEach(function (c) {
+        var el = new Audio(c.src);
+        el.preload = 'auto';
+        CLIP_AUDIO[c.key] = el;
+      });
+
       function play(key) {
-        var c = audio();
+        var clip = CLIP_AUDIO[key];
+        if (clip) {
+          var one = clip.cloneNode();
+          one.volume = 1;
+          var p = one.play();
+          if (p && p.catch) p.catch(function () {});
+          return;
+        }
         var fn = PLAY[key];
-        if (fn) fn(c);
+        if (fn) fn(audio());
       }
 
       // --- wiring --------------------------------------------------------
       var grid = document.getElementById('grid');
-      SOUNDS.forEach(function (s) {
+      ALL.forEach(function (s) {
         var b = document.createElement('button');
         b.innerHTML = '<span class="emoji">' + s.emoji + '</span>' + s.label +
-                      '<span class="key">' + s.hotkey + '</span>';
+                      '<span class="key">' + (s.hotkey || '') + '</span>';
         b.title = s.use;
         b.addEventListener('click', function () { play(s.key); });
         grid.appendChild(b);
@@ -279,8 +299,11 @@
 
       document.addEventListener('keydown', function (e) {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
-        for (var i = 0; i < SOUNDS.length; i++) {
-          if (SOUNDS[i].hotkey === e.key) { play(SOUNDS[i].key); e.preventDefault(); return; }
+        var pressed = (e.key || '').toLowerCase();
+        for (var i = 0; i < ALL.length; i++) {
+          if (ALL[i].hotkey && ALL[i].hotkey.toLowerCase() === pressed) {
+            play(ALL[i].key); e.preventDefault(); return;
+          }
         }
       });
     </script>

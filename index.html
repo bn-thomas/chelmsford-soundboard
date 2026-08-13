@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <title>Draft Soundboard</title>
+    <style>
+      /* One page serves two homes: a narrow Apps Script sidebar and a browser
+         tab of its own. auto-fit lets the same grid be 2 columns or 6. */
+      body { font-family: Roboto, Arial, sans-serif; margin: 0 auto; padding: 10px;
+             background: #f8f9fa; max-width: 900px; }
+      h1 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #5f6368; margin: 0 0 10px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; }
+      button {
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+        min-height: 76px;
+        padding: 12px 4px; border: 1px solid #dadce0; border-radius: 8px; background: #fff;
+        cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 600; color: #202124;
+        transition: transform .05s, box-shadow .1s;
+      }
+      button:hover { box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+      button:active { transform: scale(.96); background: #e8f0fe; }
+      /* Phones are the main way the league will use this: no zoom on tap, no
+         text selection when jabbing a button repeatedly. */
+      button { touch-action: manipulation; -webkit-user-select: none; user-select: none;
+               -webkit-tap-highlight-color: transparent; }
+      @media (pointer: coarse) { button { min-height: 92px; font-size: 13px; } .emoji { font-size: 26px; } }
+      .emoji { font-size: 22px; line-height: 1; }
+      .key { font-size: 10px; color: #80868b; font-weight: 400; }
+      .hint { margin-top: 12px; font-size: 11px; color: #80868b; line-height: 1.45; }
+      #stop { grid-column: 1 / -1; background: #fce8e6; border-color: #f5c6c2; color: #c5221f;
+              padding: 8px; min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <h1>Draft Soundboard</h1>
+    <div class="grid" id="grid"></div>
+    <p class="hint">Press a number key to fire the matching sound. Sounds are generated here in the
+    browser — nothing is downloaded.<br />
+    <strong>On iPhone:</strong> turn the ringer switch on, or the phone silences this page.</p>
+
+    <script>
+      var SOUNDS = [{"key": "air_horn", "label": "Air Horn", "emoji": "\ud83d\udce3", "hotkey": "1", "use": "The pick is in"}, {"key": "whistle", "label": "Ref Whistle", "emoji": "\ud83c\udfbd", "hotkey": "2", "use": "You're on the clock"}, {"key": "crowd_cheer", "label": "Crowd Roar", "emoji": "\ud83c\udf89", "hotkey": "3", "use": "Steal of the draft"}, {"key": "crowd_boo", "label": "Booooo", "emoji": "\ud83d\udc4e", "hotkey": "4", "use": "That was a reach"}, {"key": "buzzer", "label": "Buzzer", "emoji": "\u23f0", "hotkey": "5", "use": "Time expired"}, {"key": "drumroll", "label": "Drumroll", "emoji": "\ud83e\udd41", "hotkey": "6", "use": "Building suspense"}, {"key": "sad_trombone", "label": "Womp Womp", "emoji": "\ud83c\udfba", "hotkey": "7", "use": "Someone got sniped"}, {"key": "touchdown", "label": "Touchdown", "emoji": "\ud83c\udfc8", "hotkey": "8", "use": "Big board moment"}, {"key": "applause", "label": "Golf Clap", "emoji": "\ud83d\udc4f", "hotkey": "9", "use": "Solid, boring pick"}, {"key": "ka_ching", "label": "Ka-Ching", "emoji": "\ud83d\udcb0", "hotkey": "0", "use": "Value pick"}];
+      var ctx = null;
+
+      function audio() {
+        if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+        if (ctx.state === 'suspended') ctx.resume();
+        return ctx;
+      }
+
+      // --- building blocks ---------------------------------------------
+      function noiseBuffer(c, seconds, brown) {
+        var len = Math.floor(c.sampleRate * seconds);
+        var buf = c.createBuffer(1, len, c.sampleRate);
+        var d = buf.getChannelData(0), last = 0;
+        for (var i = 0; i < len; i++) {
+          var white = Math.random() * 2 - 1;
+          if (brown) { last = (last + 0.02 * white) / 1.02; d[i] = last * 3.5; }
+          else { d[i] = white; }
+        }
+        return buf;
+      }
+
+      function noise(c, dest, t0, dur, type, freq, q, peak, attack, brown) {
+        var src = c.createBufferSource();
+        src.buffer = noiseBuffer(c, dur, brown);
+        var f = c.createBiquadFilter();
+        f.type = type; f.frequency.value = freq; f.Q.value = q;
+        var g = c.createGain();
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(peak, t0 + attack);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        src.connect(f); f.connect(g); g.connect(dest);
+        src.start(t0); src.stop(t0 + dur);
+        return { filter: f, gain: g };
+      }
+
+      function tone(c, dest, t0, dur, type, freq, peak, attack, detune) {
+        var o = c.createOscillator();
+        o.type = type; o.frequency.value = freq;
+        if (detune) o.detune.value = detune;
+        var g = c.createGain();
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(peak, t0 + attack);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        o.connect(g); g.connect(dest);
+        o.start(t0); o.stop(t0 + dur + 0.02);
+        return o;
+      }
+
+      function master(c, gain) {
+        var g = c.createGain();
+        g.gain.value = gain === undefined ? 0.9 : gain;
+        g.connect(c.destination);
+        return g;
+      }
+
+      // --- the sounds ---------------------------------------------------
+      var PLAY = {};
+
+      PLAY.air_horn = function (c) {
+        var out = master(c, 0.5), t = c.currentTime, dur = 1.35;
+        var lp = c.createBiquadFilter();
+        lp.type = 'lowpass'; lp.frequency.value = 2400; lp.Q.value = 1;
+        lp.connect(out);
+        [0, 12, -9, 7].forEach(function (cents, i) {
+          var o = c.createOscillator();
+          o.type = 'sawtooth';
+          o.frequency.setValueAtTime(196 + i * 1.5, t);
+          o.frequency.setValueAtTime(196 + i * 1.5, t + dur - 0.18);
+          o.frequency.exponentialRampToValueAtTime(168 + i * 1.5, t + dur);
+          o.detune.value = cents;
+          var g = c.createGain();
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.exponentialRampToValueAtTime(0.3, t + 0.03);
+          g.gain.setValueAtTime(0.3, t + dur - 0.1);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+          o.connect(g); g.connect(lp);
+          o.start(t); o.stop(t + dur + 0.02);
+        });
+        noise(c, out, t, 0.12, 'highpass', 1800, 0.7, 0.05, 0.01);
+      };
+
+      PLAY.whistle = function (c) {
+        var out = master(c, 0.35), t = c.currentTime, dur = 0.85;
+        var warble = c.createOscillator(), warbleGain = c.createGain();
+        warble.frequency.value = 26; warbleGain.gain.value = 130;
+        warble.connect(warbleGain);
+        warble.start(t); warble.stop(t + dur + 0.02);
+        [3180, 3260].forEach(function (f) {
+          var o = c.createOscillator();
+          o.type = 'sine'; o.frequency.value = f;
+          warbleGain.connect(o.frequency);
+          var g = c.createGain();
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.exponentialRampToValueAtTime(0.35, t + 0.02);
+          g.gain.setValueAtTime(0.35, t + dur - 0.08);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+          o.connect(g); g.connect(out);
+          o.start(t); o.stop(t + dur + 0.02);
+        });
+        noise(c, out, t, dur, 'bandpass', 3200, 6, 0.07, 0.02);
+      };
+
+      PLAY.crowd_cheer = function (c) {
+        var out = master(c, 0.9), t = c.currentTime, dur = 3.2;
+        noise(c, out, t, dur, 'bandpass', 900, 0.8, 0.5, 0.55);
+        noise(c, out, t, dur, 'highpass', 2400, 0.7, 0.16, 0.7);
+        // Voices: short bright swells scattered through the roar.
+        for (var i = 0; i < 26; i++) {
+          var at = t + 0.15 + Math.random() * (dur - 1.0);
+          noise(c, out, at, 0.25 + Math.random() * 0.5, 'bandpass', 1100 + Math.random() * 1900, 5,
+                0.05 + Math.random() * 0.07, 0.08);
+        }
+      };
+
+      PLAY.crowd_boo = function (c) {
+        var out = master(c, 0.9), t = c.currentTime, dur = 2.4;
+        var body = noise(c, out, t, dur, 'lowpass', 520, 1.2, 0.5, 0.45, true);
+        body.filter.frequency.setValueAtTime(620, t);
+        body.filter.frequency.linearRampToValueAtTime(300, t + dur);
+        // The vowel: a couple of resonant peaks over the low rumble.
+        noise(c, out, t, dur, 'bandpass', 420, 9, 0.22, 0.4, true);
+        noise(c, out, t, dur, 'bandpass', 780, 7, 0.10, 0.5, true);
+      };
+
+      PLAY.buzzer = function (c) {
+        var out = master(c, 0.4), t = c.currentTime, dur = 1.25;
+        var gate = c.createGain();
+        gate.gain.value = 1;
+        gate.connect(out);
+        var chop = c.createOscillator(), chopGain = c.createGain();
+        chop.type = 'square'; chop.frequency.value = 22; chopGain.gain.value = 0.45;
+        chop.connect(chopGain); chopGain.connect(gate.gain);
+        chop.start(t); chop.stop(t + dur);
+        [98, 147].forEach(function (f) {
+          tone(c, gate, t, dur, 'square', f, 0.22, 0.008);
+        });
+      };
+
+      PLAY.drumroll = function (c) {
+        var out = master(c, 0.8), t = c.currentTime, dur = 1.9, at = t, step = 0.055;
+        while (at < t + dur) {
+          noise(c, out, at, 0.05, 'bandpass', 260, 1.6, 0.35, 0.004);
+          step = Math.max(0.018, step * 0.955);
+          at += step;
+        }
+        // Cymbal to land it.
+        noise(c, out, t + dur, 1.1, 'highpass', 5200, 0.6, 0.5, 0.005);
+        tone(c, out, t + dur, 0.5, 'sine', 82, 0.35, 0.005);
+      };
+
+      PLAY.sad_trombone = function (c) {
+        var out = master(c, 0.5), t = c.currentTime;
+        var notes = [233.08, 220.00, 196.00, 174.61], at = t;
+        notes.forEach(function (f, i) {
+          var last = i === notes.length - 1, dur = last ? 0.75 : 0.26;
+          var lp = c.createBiquadFilter();
+          lp.type = 'lowpass'; lp.Q.value = 4;
+          lp.frequency.setValueAtTime(1500, at);
+          lp.frequency.exponentialRampToValueAtTime(500, at + dur);
+          lp.connect(out);
+          var o = c.createOscillator();
+          o.type = 'sawtooth';
+          o.frequency.setValueAtTime(f, at);
+          if (last) o.frequency.exponentialRampToValueAtTime(f * 0.87, at + dur);
+          var g = c.createGain();
+          g.gain.setValueAtTime(0.0001, at);
+          g.gain.exponentialRampToValueAtTime(0.4, at + 0.04);
+          g.gain.setValueAtTime(0.4, at + dur - 0.06);
+          g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+          o.connect(g); g.connect(lp);
+          o.start(at); o.stop(at + dur + 0.02);
+          at += dur;
+        });
+      };
+
+      PLAY.touchdown = function (c) {
+        var out = master(c, 0.4), t = c.currentTime;
+        var lp = c.createBiquadFilter();
+        lp.type = 'lowpass'; lp.frequency.value = 3200;
+        lp.connect(out);
+        // G - C - E - G, the last one held.
+        var fanfare = [[392.00, 0.16], [523.25, 0.16], [659.25, 0.16], [783.99, 0.85]], at = t;
+        fanfare.forEach(function (n) {
+          [0, -8, 9].forEach(function (cents) {
+            tone(c, lp, at, n[1], 'sawtooth', n[0], 0.16, 0.02, cents);
+          });
+          tone(c, lp, at, n[1], 'square', n[0] / 2, 0.07, 0.02);
+          at += n[1];
+        });
+      };
+
+      PLAY.applause = function (c) {
+        var out = master(c, 0.9), t = c.currentTime, dur = 2.6;
+        for (var i = 0; i < 150; i++) {
+          // Dense at the front, thinning out — a room settling down.
+          var at = t + Math.pow(Math.random(), 0.6) * dur;
+          noise(c, out, at, 0.035, 'bandpass', 1200 + Math.random() * 2200, 2.2, 0.14, 0.003);
+        }
+        noise(c, out, t, dur, 'bandpass', 1600, 0.8, 0.05, 0.3);
+      };
+
+      PLAY.ka_ching = function (c) {
+        var out = master(c, 0.5), t = c.currentTime;
+        noise(c, out, t, 0.05, 'highpass', 4000, 0.7, 0.2, 0.003);
+        [[1318.51, 0], [1760.00, 0.045]].forEach(function (n) {
+          tone(c, out, t + n[1], 0.85, 'triangle', n[0], 0.3, 0.005);
+          tone(c, out, t + n[1], 0.5, 'sine', n[0] * 2, 0.09, 0.005);
+        });
+      };
+
+      function play(key) {
+        var c = audio();
+        var fn = PLAY[key];
+        if (fn) fn(c);
+      }
+
+      // --- wiring --------------------------------------------------------
+      var grid = document.getElementById('grid');
+      SOUNDS.forEach(function (s) {
+        var b = document.createElement('button');
+        b.innerHTML = '<span class="emoji">' + s.emoji + '</span>' + s.label +
+                      '<span class="key">' + s.hotkey + '</span>';
+        b.title = s.use;
+        b.addEventListener('click', function () { play(s.key); });
+        grid.appendChild(b);
+      });
+
+      var stop = document.createElement('button');
+      stop.id = 'stop';
+      stop.textContent = 'Stop everything';
+      stop.addEventListener('click', function () {
+        if (ctx) { ctx.close(); ctx = null; }
+      });
+      grid.appendChild(stop);
+
+      document.addEventListener('keydown', function (e) {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        for (var i = 0; i < SOUNDS.length; i++) {
+          if (SOUNDS[i].hotkey === e.key) { play(SOUNDS[i].key); e.preventDefault(); return; }
+        }
+      });
+    </script>
+  </body>
+</html>
